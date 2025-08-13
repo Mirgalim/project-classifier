@@ -1,4 +1,4 @@
-export const API = process.env.NEXT_PUBLIC_API || "http://localhost:8000";
+export const API = process.env.NEXT_PUBLIC_API || "https://project-classifier.onrender.com";
 
 export async function uploadAndClassify({
   sales,
