@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+html, body { height: 100%; }
+body {
+  @apply bg-bg text-zinc-200;
+  background:
+    radial-gradient(1200px 600px at 80% -10%, rgba(34,197,94,.15), transparent 50%),
+    radial-gradient(800px 400px at -10% 10%, rgba(59,130,246,.12), transparent 50%),
+    #0b0b0b;
+}
+
+.container { @apply max-w-6xl mx-auto px-4; }
+.card { @apply bg-card/80 backdrop-blur border border-border/80 rounded-2xl shadow-soft; }
+.input { @apply w-full rounded-xl border border-border bg-[#0f1012] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/40; }
+.btn { @apply inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-400 px-4 py-2 font-semibold text-emerald-950 transition hover:bg-emerald-300 disabled:opacity-60 disabled:cursor-not-allowed; }
+.btn-secondary { @apply inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-800 px-4 py-2 font-semibold text-zinc-200 border border-border hover:bg-zinc-700; }
+.badge { @apply inline-flex items-center rounded-lg bg-emerald-500/10 text-emerald-400 px-2 py-0.5 text-xs border border-emerald-500/20; }
+.table { @apply w-full border-collapse; }
+.table th { @apply text-zinc-400 border-b border-border px-2 py-2 text-left text-xs md:text-sm; }
+.table td { @apply border-b border-border px-2 py-2 text-xs md:text-sm; }
+.heading-gradient { @apply bg-clip-text text-transparent; background-image: linear-gradient(90deg, #86efac, #60a5fa); }

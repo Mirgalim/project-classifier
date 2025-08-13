@@ -1,0 +1,17 @@
+# python
+backend/.venv/
+backend/__pycache__/
+backend/*.pyc
+backend/storage/
+backend/*.log
+
+# node/next
+frontend/node_modules/
+frontend/.next/
+frontend/.vercel/
+frontend/.env*
+npm-debug.log*
+yarn-error.log*
+
+# macOS
+.DS_Store
