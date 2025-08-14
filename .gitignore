@@ -2,7 +2,8 @@
 backend/.venv/
 backend/__pycache__/
 backend/*.pyc
-backend/storage/
+backend/storage/*
+!backend/storage/.gitkeep
 backend/*.log
 
 # node/next
