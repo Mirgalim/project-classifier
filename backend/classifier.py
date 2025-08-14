@@ -11,6 +11,8 @@ from scipy import sparse
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics.pairwise import linear_kernel
+from functools import partial
+
 
 STORAGE_DIR = Path(__file__).parent / "storage"
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
@@ -85,27 +87,32 @@ def run_classification(
     base_cols = ['Ерөнхий ангилал', 'Төрөл', 'Ангилал', 'Тайлбар', 'Бренд']  # without 'Сегмент'
 
     category_dfs = []
-    skipped = []
 
-    for sheet_name in cat_xls.sheet_names:
-        try:
-            sheet_df = cat_xls.parse(sheet_name, dtype=str)
-            # Ensure all required base cols exist (create empty if missing)
-            sheet_df = _ensure_columns(sheet_df, base_cols).fillna('')
-            # Normalize text cols
-            for col in base_cols:
-                sheet_df[col] = sheet_df[col].astype(str).str.strip().str.lower()
-            sheet_df['Сегмент'] = sheet_name
-            category_dfs.append(sheet_df)
-        except Exception as e:
-            skipped.append(f"{sheet_name}: {e}")
-            continue
+    def parse_sheet(sheet_name: str) -> tuple[str, pd.DataFrame]:
+        df = cat_xls.parse(sheet_name, dtype=str)
+        return sheet_name, df
+
+    with ThreadPoolExecutor(max_workers=min(4, len(cat_xls.sheet_names))) as executor:
+        future_to_sheet = {
+            executor.submit(partial(parse_sheet, sheet)): sheet
+            for sheet in cat_xls.sheet_names
+        }
+        for future in as_completed(future_to_sheet):
+            sheet_name = future_to_sheet[future]
+            try:
+                _, sheet_df = future.result()
+                sheet_df = _ensure_columns(sheet_df, base_cols).fillna('')
+                for col in base_cols:
+                    sheet_df[col] = sheet_df[col].astype(str).str.strip().str.lower()
+                sheet_df['Сегмент'] = sheet_name
+                category_dfs.append(sheet_df)
+            except Exception as e:
+                # Хүсвэл энд debug log хийж болно
+                # print(f"Sheet '{sheet_name}' failed: {e}")
+                continue
 
     if not category_dfs:
-        msg = "Ангиллын Excel-д хүчинтэй sheet олдсонгүй."
-        if skipped:
-            msg += " Алгассан шитүүд: " + "; ".join(skipped[:5])
-        raise ClassificationError(msg)
+        raise ClassificationError("Ангиллын Excel-д хүчинтэй sheet олдсонгүй.")
 
     category_df = pd.concat(category_dfs, ignore_index=True)
     del category_dfs, cat_xls
