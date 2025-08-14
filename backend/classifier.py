@@ -85,27 +85,27 @@ def run_classification(
     base_cols = ['Ерөнхий ангилал', 'Төрөл', 'Ангилал', 'Тайлбар', 'Бренд']  # without 'Сегмент'
 
     category_dfs = []
-    with ThreadPoolExecutor(max_workers=min(4, len(cat_xls.sheet_names))) as executor:
-        # parse-ийг шууд future болгож, sheet нэрийг map-д хадгална
-        future_to_sheet = {
-            executor.submit(cat_xls.parse, sheet, dtype=str): sheet
-            for sheet in cat_xls.sheet_names
-        }
-        for future in as_completed(future_to_sheet):
-            sheet_name = future_to_sheet[future]
-            try:
-                sheet_df = future.result()
-                sheet_df = _ensure_columns(sheet_df, base_cols).fillna('')
-                for col in base_cols:
-                    sheet_df[col] = sheet_df[col].astype(str).str.strip().str.lower()
-                sheet_df['Сегмент'] = sheet_name
-                category_dfs.append(sheet_df)
-            except Exception:
-                # Хэрэв эвдэрхий sheet байвал алгасна
-                continue
+    skipped = []
+
+    for sheet_name in cat_xls.sheet_names:
+        try:
+            sheet_df = cat_xls.parse(sheet_name, dtype=str)
+            # Ensure all required base cols exist (create empty if missing)
+            sheet_df = _ensure_columns(sheet_df, base_cols).fillna('')
+            # Normalize text cols
+            for col in base_cols:
+                sheet_df[col] = sheet_df[col].astype(str).str.strip().str.lower()
+            sheet_df['Сегмент'] = sheet_name
+            category_dfs.append(sheet_df)
+        except Exception as e:
+            skipped.append(f"{sheet_name}: {e}")
+            continue
 
     if not category_dfs:
-        raise ClassificationError("Ангиллын Excel-д хүчинтэй sheet олдсонгүй.")
+        msg = "Ангиллын Excel-д хүчинтэй sheet олдсонгүй."
+        if skipped:
+            msg += " Алгассан шитүүд: " + "; ".join(skipped[:5])
+        raise ClassificationError(msg)
 
     category_df = pd.concat(category_dfs, ignore_index=True)
     del category_dfs, cat_xls
