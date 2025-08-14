@@ -86,25 +86,22 @@ def run_classification(
 
     category_dfs = []
     with ThreadPoolExecutor(max_workers=min(4, len(cat_xls.sheet_names))) as executor:
+        # parse-ийг шууд future болгож, sheet нэрийг map-д хадгална
         future_to_sheet = {
-            executor.submit(lambda s: (s, cat_xls.parse(s, dtype=str))): sheet
+            executor.submit(cat_xls.parse, sheet, dtype=str): sheet
             for sheet in cat_xls.sheet_names
         }
         for future in as_completed(future_to_sheet):
             sheet_name = future_to_sheet[future]
             try:
-                _, sheet_df = future.result()
-                # Ensure all required base cols exist (create empty if missing)
+                sheet_df = future.result()
                 sheet_df = _ensure_columns(sheet_df, base_cols).fillna('')
-                # Normalize text cols
                 for col in base_cols:
                     sheet_df[col] = sheet_df[col].astype(str).str.strip().str.lower()
                 sheet_df['Сегмент'] = sheet_name
                 category_dfs.append(sheet_df)
-            except Exception as e:
-                # Instead of hard fail, skip broken sheet but keep signal
-                # If you prefer hard fail, raise ClassificationError here
-                # raise ClassificationError(f"Sheet '{sheet_name}' уншиж чадсангүй: {e}")
+            except Exception:
+                # Хэрэв эвдэрхий sheet байвал алгасна
                 continue
 
     if not category_dfs:
