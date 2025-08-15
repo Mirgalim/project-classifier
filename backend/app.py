@@ -10,13 +10,12 @@ from classifier import run_classification, STORAGE_DIR, ClassificationError
 
 app = FastAPI(title="TF-IDF Classifier API", version="1.0.0")
 
-# CORS (adjust origins as needed)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"]
-    ,allow_headers=["*"]
+    allow_methods=["*"],
+    allow_headers=["*"]
 )
 
 @app.get("/health")
@@ -28,7 +27,9 @@ async def classify(
     sales: UploadFile = File(..., description="sales.xlsx"),
     category: UploadFile = File(..., description="Nomin_ba3.xlsx"),
     manual: Optional[UploadFile] = File(None, description="manual_fix.xlsx (optional)"),
-    threshold: float = Form(0.15)
+    threshold: float = Form(0.15),
+    max_workers: int = Form(3),
+    batch_size: Optional[int] = Form(None)
 ):
     try:
         sales_bytes = await sales.read()
@@ -40,9 +41,10 @@ async def classify(
             category_bytes=cat_bytes,
             manual_bytes=manual_bytes,
             probability_threshold=threshold,
+            max_workers=max_workers,
+            batch_size=batch_size
         )
 
-        # Preview first 100 rows
         preview = df.head(100).fillna("").to_dict(orient='records')
         return JSONResponse({
             "status": "success",

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import gc
+import psutil
 
 import pandas as pd
 import numpy as np
@@ -21,7 +22,49 @@ class ClassificationError(Exception):
     pass
 
 
-# ---------- Helpers ----------
+def calculate_batch_size() -> int:
+    available_memory = psutil.virtual_memory().available
+    max_products_in_memory = (available_memory * 0.7) // (100 * 1024 * 1024) * 1000
+    return max(500, min(int(max_products_in_memory), 5000))
+
+
+def process_product_batch(products_batch: np.ndarray, 
+                         vectorizer: TfidfVectorizer,
+                         cat_vecs: sparse.csr_matrix,
+                         category_df: pd.DataFrame) -> pd.DataFrame:
+    
+    batch_vecs = vectorizer.transform(products_batch)
+    
+    try:
+        nn = NearestNeighbors(n_neighbors=1, metric="cosine", algorithm="brute", n_jobs=-1)
+        nn.fit(cat_vecs)
+        distances, indices = nn.kneighbors(batch_vecs, return_distance=True)
+        best_idx = indices.reshape(-1).astype(np.int32)
+        best_sim = (1.0 - distances.reshape(-1)).astype(np.float32)
+        del nn, distances, indices
+    except Exception:
+        batch_vecs = batch_vecs.tocsr()
+        sims = linear_kernel(batch_vecs, cat_vecs)
+        best_idx = sims.argmax(axis=1).astype(np.int32)
+        best_sim = sims.max(axis=1).astype(np.float32)
+        if sparse.issparse(best_sim):
+            best_idx = np.asarray(best_idx).ravel()
+            best_sim = np.asarray(best_sim).ravel()
+        del sims
+    
+    picked = category_df.iloc[best_idx][['Ангилал', 'Төрөл', 'Ерөнхий ангилал', 'Сегмент']].reset_index(drop=True)
+    batch_result = pd.DataFrame({
+        'Барааны нэр': products_batch, 
+        'Магадлал': best_sim
+    })
+    batch_result = pd.concat([batch_result, picked], axis=1)
+    
+    del batch_vecs
+    gc.collect()
+    
+    return batch_result
+
+
 def _read_excel_required(file_bytes: bytes, label: str) -> pd.DataFrame:
     try:
         return pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl")
@@ -32,14 +75,12 @@ def _normalize_text_series(s: pd.Series) -> pd.Series:
     return s.astype(str, copy=False).str.strip().str.lower()
 
 def _ensure_columns(df: pd.DataFrame, required: list[str]) -> pd.DataFrame:
-    """Ensure required columns exist; create empty ones if missing."""
     for col in required:
         if col not in df.columns:
             df[col] = ""
     return df[required]
 
 def _create_key_text(df: pd.DataFrame) -> pd.Series:
-    # No duplicate fields; strict order
     return (
         df['Төрөл'].astype(str) + " " +
         df['Ерөнхий ангилал'].astype(str) + " " +
@@ -49,22 +90,23 @@ def _create_key_text(df: pd.DataFrame) -> pd.Series:
     )
 
 def _save_xlsx(df: pd.DataFrame, path: Path) -> None:
-    # Use only openpyxl to avoid env issues with xlsxwriter
     with pd.ExcelWriter(path, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Results')
 
 
-# ---------- Core ----------
 def run_classification(
     sales_bytes: bytes,
     category_bytes: bytes,
     manual_bytes: Optional[bytes] = None,
     probability_threshold: float = 0.15,
-    batch_size: int = 2000,     # kept for signature compatibility; not used
+    batch_size: int = None,
+    max_workers: int = 3,
     max_features: int = 20000,
 ) -> Tuple[str, pd.DataFrame]:
 
-    # 1) Sales
+    if batch_size is None:
+        batch_size = calculate_batch_size()
+
     sales_df = _read_excel_required(sales_bytes, "sales.xlsx")
     if 'Барааны нэр' not in sales_df.columns:
         raise ClassificationError("sales.xlsx дотор 'Барааны нэр' багана байх ёстой!")
@@ -77,15 +119,13 @@ def run_classification(
         _save_xlsx(sales_df, out_path)
         return job_id, sales_df
 
-    # 2) Category sheets (robust)
     try:
         cat_xls = pd.ExcelFile(io.BytesIO(category_bytes), engine="openpyxl")
     except Exception as e:
         raise ClassificationError(f"Ангиллын Excel-ийг нээж чадсангүй: {e}")
 
     needed_cols = ['Ерөнхий ангилал', 'Төрөл', 'Ангилал', 'Тайлбар', 'Бренд', 'Сегмент']
-    base_cols = ['Ерөнхий ангилал', 'Төрөл', 'Ангилал', 'Тайлбар', 'Бренд']  # without 'Сегмент'
-
+    base_cols = ['Ерөнхий ангилал', 'Төрөл', 'Ангилал', 'Тайлбар', 'Бренд']
     category_dfs = []
 
     def parse_sheet(sheet_name: str) -> tuple[str, pd.DataFrame]:
@@ -106,9 +146,7 @@ def run_classification(
                     sheet_df[col] = sheet_df[col].astype(str).str.strip().str.lower()
                 sheet_df['Сегмент'] = sheet_name
                 category_dfs.append(sheet_df)
-            except Exception as e:
-                # Хүсвэл энд debug log хийж болно
-                # print(f"Sheet '{sheet_name}' failed: {e}")
+            except Exception:
                 continue
 
     if not category_dfs:
@@ -118,14 +156,10 @@ def run_classification(
     del category_dfs, cat_xls
     gc.collect()
 
-    # Make sure final df has all needed cols (safety)
     category_df = _ensure_columns(category_df, needed_cols)
-
-    # 3) Key text (category only)
     category_df['түлхүүр_текст'] = _create_key_text(category_df)
     cat_texts = category_df['түлхүүр_текст'].values
 
-    # 4) TF-IDF (fit on categories, transform products)
     if cat_texts.size == 0:
         raise ClassificationError("Ангиллын текст хоосон байна.")
 
@@ -139,47 +173,39 @@ def run_classification(
         norm='l2'
     )
 
-    cat_vecs = vectorizer.fit_transform(cat_texts)       # Nc x D
-    prod_vecs = vectorizer.transform(unique_products)    # Np x D
+    cat_vecs = vectorizer.fit_transform(cat_texts)
+    
+    product_batches = []
+    for i in range(0, len(unique_products), batch_size):
+        batch = unique_products[i:i + batch_size]
+        product_batches.append(batch)
+    
+    all_results = []
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_batch = {
+            executor.submit(
+                process_product_batch, 
+                batch, vectorizer, cat_vecs, category_df
+            ): i 
+            for i, batch in enumerate(product_batches)
+        }
+        
+        for future in as_completed(future_to_batch):
+            batch_idx = future_to_batch[future]
+            try:
+                batch_result = future.result()
+                all_results.append((batch_idx, batch_result))
+            except Exception:
+                raise
 
-    # 5) Top-1 match: try NN first, else sparse linear_kernel
-    try:
-        nn = NearestNeighbors(n_neighbors=1, metric="cosine", algorithm="brute", n_jobs=-1)
-        nn.fit(cat_vecs)
-        distances, indices = nn.kneighbors(prod_vecs, n_neighbors=1, return_distance=True)
-        best_idx = indices.reshape(-1).astype(np.int32)
-        best_sim = (1.0 - distances.reshape(-1)).astype(np.float32)
-        del nn, distances, indices
-    except Exception:
-        # Fallback: blockwise linear_kernel on sparse matrices
-        prod_vecs = prod_vecs.tocsr()
-        cat_vecs = cat_vecs.tocsr()
-        n_products = prod_vecs.shape[0]
-        block = max(1000, min(20000, n_products))
-        best_idx = np.zeros(n_products, dtype=np.int32)
-        best_sim = np.zeros(n_products, dtype=np.float32)
-        for i in range(0, n_products, block):
-            j = min(i + block, n_products)
-            sims = linear_kernel(prod_vecs[i:j], cat_vecs)  # (j-i, Nc)
-            idx = sims.argmax(axis=1)
-            sc = sims.max(axis=1)
-            if sparse.issparse(sims):
-                idx = np.asarray(idx).ravel()
-                sc = np.asarray(sc).ravel()
-            best_idx[i:j] = idx.astype(np.int32, copy=False)
-            best_sim[i:j] = sc.astype(np.float32, copy=False)
-            del sims
-            gc.collect()
-
-    del prod_vecs, cat_vecs
+    all_results.sort(key=lambda x: x[0])
+    classified_batches = [result for _, result in all_results]
+    classified = pd.concat(classified_batches, ignore_index=True)
+    
+    del all_results, classified_batches, cat_vecs
     gc.collect()
 
-    # 6) Build classification
-    picked = category_df.iloc[best_idx][['Ангилал', 'Төрөл', 'Ерөнхий ангилал', 'Сегмент']].reset_index(drop=True)
-    classified = pd.DataFrame({'Барааны нэр': unique_products, 'Магадлал': best_sim}, copy=False)
-    classified = pd.concat([classified, picked], axis=1)
-
-    # 7) Manual overrides
     if manual_bytes is not None:
         manual_df = _read_excel_required(manual_bytes, "manual_fix.xlsx")
         if 'Барааны нэр' not in manual_df.columns:
@@ -195,13 +221,10 @@ def run_classification(
                 mask = low_conf & classified[mcol].notna()
                 classified.loc[mask, col] = classified.loc[mask, mcol]
 
-        # drop *_гар columns
         classified = classified.drop(columns=[c for c in classified.columns if c.endswith('_гар')], errors='ignore')
 
-    # 8) Join back
     final_result = sales_df.merge(classified, on='Барааны нэр', how='left')
 
-    # 9) Save (openpyxl only)
     job_id = uuid.uuid4().hex[:12]
     out_path = STORAGE_DIR / f"angilsan_{job_id}.xlsx"
     _save_xlsx(final_result, out_path)
