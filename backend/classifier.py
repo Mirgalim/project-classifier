@@ -49,6 +49,27 @@ KW = {
     "candy":  re.compile(r"\b(чихэр|lollipop|trolli|candy|sour)\b", re.I),
 }
 
+# ====== Blank row cleaners ======
+EMPTY_RE = re.compile(r"^\s*$", re.I)
+HAS_TEXT_RE = re.compile(r"[0-9a-zA-Zа-яА-ЯөӨүҮёЁһ]+", re.I)
+
+def drop_fully_blank_rows(df: pd.DataFrame) -> pd.DataFrame:
+    tmp = df.replace(EMPTY_RE, np.nan, regex=True)
+    return df.loc[~tmp.isna().all(axis=1)].copy()
+
+def clean_sales_rows(sales_df: pd.DataFrame, name_col: str="Барааны нэр") -> pd.DataFrame:
+    sales_df = drop_fully_blank_rows(sales_df)
+    sales_df[name_col] = _normalize_text_fast(sales_df[name_col])
+    ok = sales_df[name_col].str.len().ge(2) & sales_df[name_col].str.contains(HAS_TEXT_RE)
+    out = sales_df.loc[ok].copy()
+    removed = len(sales_df) - len(out)
+    if removed:
+        print(f"🧹 Dropped {removed} empty/garbage product rows")
+    return out
+
+def clean_category_rows(category_df: pd.DataFrame) -> pd.DataFrame:
+    return drop_fully_blank_rows(category_df)
+
 # ====== Shared helpers ======
 def _read_excel_fast(file_bytes: bytes, label: str) -> pd.DataFrame:
     with Timer(f"Reading {label}"):
@@ -57,7 +78,7 @@ def _read_excel_fast(file_bytes: bytes, label: str) -> pd.DataFrame:
                 io.BytesIO(file_bytes),
                 engine="openpyxl",
                 dtype=str,
-                na_filter=False
+                na_filter=False  # Excel-д хоосон мөр их байдаг тул өөрсдөө шүүнэ
             )
         except Exception as e:
             raise ClassificationError(f"'{label}' файлыг уншиж чадсангүй: {e}")
@@ -77,7 +98,6 @@ def _ensure_columns(df: pd.DataFrame, required: list[str]) -> pd.DataFrame:
     return df[required].copy()
 
 def _create_key_text_fast(df: pd.DataFrame) -> pd.Series:
-    # 'Төрөл'-ийг хоёр давтаж жин өгнө (танай анхны логик)
     return (
         df["Төрөл"].astype(str) + " " +
         df["Төрөл"].astype(str) + " " +
@@ -130,7 +150,7 @@ def _fallback_guess(name: str):
 
 def _save_xlsx_ultra_fast(df: pd.DataFrame, path: Path) -> None:
     with Timer("Saving Excel"):
-        # Сонголтоор Parquet хадгална
+        # (optional) Parquet
         try:
             import pyarrow.parquet as pq
             import pyarrow as pa
@@ -138,7 +158,7 @@ def _save_xlsx_ultra_fast(df: pd.DataFrame, path: Path) -> None:
         except Exception:
             pass
 
-        # Заавал .xlsx бичих
+        # Excel write
         try:
             with pd.ExcelWriter(
                 path, engine="xlsxwriter",
@@ -147,7 +167,6 @@ def _save_xlsx_ultra_fast(df: pd.DataFrame, path: Path) -> None:
                 df.to_excel(w, index=False, sheet_name="Results", float_format="%.3f")
             return
         except Exception:
-            # Том DF үед хэсэгчлэн бичих fallback
             chunk = 10000
             first = True
             for i in range(0, len(df), chunk):
@@ -160,7 +179,7 @@ def _save_xlsx_ultra_fast(df: pd.DataFrame, path: Path) -> None:
                         part.to_excel(w, index=False, startrow=i+1, header=False)
 
 # ======================================================================
-# ENGINE 1: "SCRIPT" — таны standalone скриптийн яг логикийг bytes орчноор
+# ENGINE 1: "SCRIPT" — standalone скриптийн яг логик
 # ======================================================================
 def _run_classification_scriptlike(
     sales_bytes: bytes,
@@ -175,10 +194,10 @@ def _run_classification_scriptlike(
     sales_df = _read_excel_fast(sales_bytes, "sales.xlsx")
     if "Барааны нэр" not in sales_df.columns:
         raise ClassificationError("sales.xlsx дотор 'Барааны нэр' багана байх ёстой!")
-    sales_df["Барааны нэр"] = _normalize_text_fast(sales_df["Барааны нэр"])
+    sales_df = clean_sales_rows(sales_df, "Барааны нэр")
     unique_products = sales_df["Барааны нэр"].dropna().unique()
 
-    # 2) Categories: бүх sheet-үүд
+    # 2) Categories
     with Timer("Reading category Excel"):
         try:
             excel_file = pd.ExcelFile(io.BytesIO(category_bytes), engine="openpyxl")
@@ -197,14 +216,14 @@ def _run_classification_scriptlike(
         raise ClassificationError("Ангиллын Excel-д хүчинтэй sheet олдсонгүй.")
 
     category_df = pd.concat(cat_rows, ignore_index=True)
-    category_df = category_df.fillna("")
-    # 3) Багануудыг цэвэрлээд шаардлагатайг үлдээнэ
+    category_df = clean_category_rows(category_df)
+
     keep_cols = ["Ерөнхий ангилал", "Төрөл", "Ангилал", "Тайлбар", "Бренд", "Сегмент"]
     category_df = _ensure_columns(category_df, keep_cols).fillna("")
     for col in keep_cols:
         category_df[col] = _normalize_text_fast(category_df[col])
 
-    # 4) түлхүүр_текст (Төрөл-ийг давхар жинлэнэ)
+    # 4) түлхүүр_текст
     category_df["түлхүүр_текст"] = (
         category_df["Төрөл"] + " " +
         category_df["Төрөл"] + " " +
@@ -236,7 +255,7 @@ def _run_classification_scriptlike(
         "Магадлал": best_match_scores.astype(np.float32),
     })
 
-    # 6.1) Manual override (optional)
+    # 6.1) Manual override
     if manual_bytes is not None:
         manual_df = _read_excel_fast(manual_bytes, "manual_fix.xlsx")
         if "Барааны нэр" not in manual_df.columns:
@@ -244,7 +263,6 @@ def _run_classification_scriptlike(
         manual_df["Барааны нэр"] = _normalize_text_fast(manual_df["Барааны нэр"])
 
         classified = classified.merge(manual_df, on="Барааны нэр", how="left", suffixes=("", "_гар"))
-
         thr = float(probability_threshold)
 
         def choose(col: str):
@@ -255,21 +273,21 @@ def _run_classification_scriptlike(
                     classified[g],
                     classified[col]
                 )
-
         for col in ["Ангилал", "Төрөл", "Ерөнхий ангилал", "Сегмент"]:
             choose(col)
 
         classified = classified.drop(columns=[c for c in classified.columns if c.endswith("_гар")], errors="ignore")
 
-    # 7) Sales руу буцааж merge
+    # 7) Merge back
     final_result = sales_df.merge(classified, on="Барааны нэр", how="left")
+    final_result = final_result[final_result["Барааны нэр"].str.strip().ne("")].copy()
 
     job_id = uuid.uuid4().hex[:12]
     print(f"🎉 SCRIPT engine total: {time.time() - total_start:.2f}s  rows={len(final_result)}")
     return job_id, final_result
 
 # ======================================================================
-# ENGINE 2: "SMART" — танай сайжруулсан (penalty/hints) логик (өмнөх тань)
+# ENGINE 2: "SMART" — penalty/hint-тэй хувилбар
 # ======================================================================
 def _run_classification_smart(
     sales_bytes: bytes,
@@ -286,9 +304,8 @@ def _run_classification_smart(
     sales_df = _read_excel_fast(sales_bytes, "sales.xlsx")
     if "Барааны нэр" not in sales_df.columns:
         raise ClassificationError("sales.xlsx дотор 'Барааны нэр' багана байх ёстой!")
-
     with Timer("Processing sales data"):
-        sales_df["Барааны нэр"] = _normalize_text_fast(sales_df["Барааны нэр"])
+        sales_df = clean_sales_rows(sales_df, "Барааны нэр")
         unique_products = sales_df["Барааны нэр"].dropna().unique()
         print(f"📊 Unique products: {len(unique_products)}")
 
@@ -331,6 +348,7 @@ def _run_classification_smart(
             raise ClassificationError("Ангиллын Excel-д хүчинтэй sheet олдсонгүй.")
 
         category_df = pd.concat(cat_parts, ignore_index=True)
+        category_df = clean_category_rows(category_df)
         category_df = _ensure_columns(category_df, needed)
         print(f"📊 Category entries (raw): {len(category_df)}")
 
@@ -339,7 +357,6 @@ def _run_classification_smart(
         base_text = _create_key_text_fast(category_df).str.strip()
         category_df["түлхүүр_текст"] = base_text
 
-        # Хэт сул/хоосон мөрүүдийг drop (>= 2 үгтэйг үлдээнэ)
         valid_mask = _word_count(category_df["түлхүүр_текст"]) >= 2
         dropped = (~valid_mask).sum()
         if dropped:
@@ -349,13 +366,10 @@ def _run_classification_smart(
         if category_df.empty:
             raise ClassificationError("Ангиллын текстүүд хоосон байна (бусад sheet-үүдийг шалгана уу).")
 
-        # Domain hint flags for categories
         tags, cat_is_cons, cat_is_appl = [], [], []
         for _, row in category_df.iterrows():
             t, ccons, cappl = _category_hint_tags(row)
-            tags.append(t)
-            cat_is_cons.append(ccons)
-            cat_is_appl.append(cappl)
+            tags.append(t); cat_is_cons.append(ccons); cat_is_appl.append(cappl)
         category_df["__hint_tags"] = tags
         category_df["__is_consumable"] = np.array(cat_is_cons, dtype=bool)
         category_df["__is_appliance"]  = np.array(cat_is_appl, dtype=bool)
@@ -395,13 +409,11 @@ def _run_classification_smart(
     with Timer("Computing similarities"):
         similarities = cosine_similarity(prod_vecs, cat_vecs)
 
-        # Consumable product ⟷ Appliance category = penalty
         rows = np.where(prod_is_cons)[0]
         cols = np.where(category_df["__is_appliance"].values)[0]
         if rows.size and cols.size:
             similarities[np.ix_(rows, cols)] *= 0.6
 
-        # Appliance product ⟷ Consumable category = penalty
         rows2 = np.where(prod_is_appl)[0]
         cols2 = np.where(category_df["__is_consumable"].values)[0]
         if rows2.size and cols2.size:
@@ -422,7 +434,6 @@ def _run_classification_smart(
         })
         classified = pd.concat([classified, picked], axis=1)
 
-        # 0-ижилттэй → UNCLASSIFIED + жижиг keyword fallback
         zero_mask = best_sim <= 1e-8
         if zero_mask.any():
             print(f"⚠️ No-match products: {zero_mask.sum()}")
@@ -447,10 +458,8 @@ def _run_classification_smart(
             classified = classified.merge(manual_df, on="Барааны нэр", how="left", suffixes=("", "_гар"))
 
             low_conf = classified["Магадлал"] < float(probability_threshold)
-
             def non_empty(s: pd.Series) -> pd.Series:
                 return s.astype(str).str.strip().ne("")
-
             for col in ["Ангилал", "Төрөл", "Ерөнхий ангилал", "Сегмент"]:
                 mcol = f"{col}_гар"
                 if mcol in classified.columns:
@@ -462,6 +471,7 @@ def _run_classification_smart(
     # --- Final merge
     with Timer("Final merge"):
         final_result = sales_df.merge(classified, on="Барааны нэр", how="left")
+        final_result = final_result[final_result["Барааны нэр"].str.strip().ne("")].copy()
 
     job_id = uuid.uuid4().hex[:12]
     print(f"🎉 SMART engine total: {time.time() - total_start:.2f}s")

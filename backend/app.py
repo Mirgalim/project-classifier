@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from classifier import run_classification, save_excel_file, STORAGE_DIR, ClassificationError
 
-app = FastAPI(title="TF-IDF Classifier API", version="1.1.0")
+app = FastAPI(title="TF-IDF Classifier API", version="1.2.0")
 
 RESULTS_CACHE = {}
 
@@ -49,12 +49,19 @@ async def classify(
 
         RESULTS_CACHE[job_id] = df
 
-        preview = df.head(100).fillna("").to_dict(orient='records')
+        # ❗ Preview дээр хоосон “Барааны нэр”-тэй мөрийг харагдуулахгүй
+        if "Барааны нэр" in df.columns:
+            clean_preview_df = df[df["Барааны нэр"].astype(str).str.strip().ne("")]
+        else:
+            clean_preview_df = df
+
+        preview = clean_preview_df.head(100).fillna("").to_dict(orient='records')
+
         return JSONResponse({
             "status": "success",
             "engine": engine,
             "job_id": job_id,
-            "rows": len(df),
+            "rows": int(len(df)),
             "preview": preview,
             "download_url": f"/api/download/{job_id}",
             "processing_time": "Fast! No file saved yet."
@@ -107,8 +114,8 @@ async def get_results(job_id: str, page: int = 0, size: int = 100):
         "job_id": job_id,
         "page": page,
         "size": size,
-        "total_rows": len(df),
-        "total_pages": (len(df) + size - 1) // size,
+        "total_rows": int(len(df)),
+        "total_pages": int((len(df) + size - 1) // size),
         "data": page_data
     }
 
