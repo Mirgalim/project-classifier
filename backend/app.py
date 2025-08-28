@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from classifier import run_classification, save_excel_file, STORAGE_DIR, ClassificationError
 
-app = FastAPI(title="TF-IDF Classifier API", version="1.0.0")
+app = FastAPI(title="TF-IDF Classifier API", version="1.1.0")
 
 RESULTS_CACHE = {}
 
@@ -30,7 +30,8 @@ async def classify(
     category: UploadFile = File(..., description="Nomin_ba3.xlsx"),
     manual: Optional[UploadFile] = File(None, description="manual_fix.xlsx (optional)"),
     threshold: float = Form(0.15),
-    max_features: int = Form(10000)
+    max_features: int = Form(10000),
+    engine: str = Form("smart")  # "smart" | "script"
 ):
     try:
         sales_bytes = await sales.read()
@@ -42,14 +43,16 @@ async def classify(
             category_bytes=cat_bytes,
             manual_bytes=manual_bytes,
             probability_threshold=threshold,
-            max_features=max_features
+            max_features=max_features,
+            engine=engine
         )
-    
+
         RESULTS_CACHE[job_id] = df
 
         preview = df.head(100).fillna("").to_dict(orient='records')
         return JSONResponse({
             "status": "success",
+            "engine": engine,
             "job_id": job_id,
             "rows": len(df),
             "preview": preview,

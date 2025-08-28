@@ -11,16 +11,13 @@ import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-
 # ====== Storage ======
 STORAGE_DIR = Path(__file__).parent / "storage"
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
-
 # ====== Errors & Utils ======
 class ClassificationError(Exception):
     pass
-
 
 class Timer:
     def __init__(self, name: str):
@@ -31,8 +28,7 @@ class Timer:
     def __exit__(self, *args):
         print(f"⏱️  {self.name}: {time.time() - self.start:.2f}s")
 
-
-# ====== Heuristic regex (MN/RU mix) ======
+# ====== Heuristic regex (MN/RU mix) for SMART engine ======
 CONSUMABLE_PAT = re.compile(
     r"(?:\b|\s)(?:г|гр|грам|ml|мл|kg|кг|шт|ширхэг|уут|пакет|sachet|stick|стик|"
     r"3в1|3-in-1|mix|капучино|латте|эспрессо|espresso|instant|classic|gold|"
@@ -43,7 +39,6 @@ APPLIANCE_PAT = re.compile(
     r"чайник|kettle|машин|ватт|w\b|Вт\b)"
 )
 
-# Quick keyword hints for UNCLASSIFIED fallback
 KW = {
     "coffee": re.compile(r"\b(кофе|капучино|латте|эспрессо|espresso|3в1|3-in-1)\b", re.I),
     "tea":    re.compile(r"\b(цай|tea|chai|масала)\b", re.I),
@@ -54,8 +49,7 @@ KW = {
     "candy":  re.compile(r"\b(чихэр|lollipop|trolli|candy|sour)\b", re.I),
 }
 
-
-# ====== Helpers ======
+# ====== Shared helpers ======
 def _read_excel_fast(file_bytes: bytes, label: str) -> pd.DataFrame:
     with Timer(f"Reading {label}"):
         try:
@@ -68,7 +62,6 @@ def _read_excel_fast(file_bytes: bytes, label: str) -> pd.DataFrame:
         except Exception as e:
             raise ClassificationError(f"'{label}' файлыг уншиж чадсангүй: {e}")
 
-
 def _normalize_text_fast(s: pd.Series) -> pd.Series:
     return (
         s.astype(str)
@@ -77,16 +70,14 @@ def _normalize_text_fast(s: pd.Series) -> pd.Series:
          .str.replace(r"\s+", " ", regex=True)
     )
 
-
 def _ensure_columns(df: pd.DataFrame, required: list[str]) -> pd.DataFrame:
     for col in required:
         if col not in df.columns:
             df[col] = ""
     return df[required].copy()
 
-
 def _create_key_text_fast(df: pd.DataFrame) -> pd.Series:
-    # 'Төрөл'-ийг хоёр давтаж жин өгнө (анхны логиктой ижил)
+    # 'Төрөл'-ийг хоёр давтаж жин өгнө (танай анхны логик)
     return (
         df["Төрөл"].astype(str) + " " +
         df["Төрөл"].astype(str) + " " +
@@ -96,14 +87,12 @@ def _create_key_text_fast(df: pd.DataFrame) -> pd.Series:
         df["Бренд"].astype(str)
     )
 
-
 def _word_count(series: pd.Series) -> pd.Series:
     return series.str.replace(r"[^\w\s]+", " ", regex=True).str.split().map(
         lambda x: len(x) if isinstance(x, list) else 0
     )
 
-
-def _category_hint_tags(row: pd.Series) -> tuple[str, bool, bool]:
+def _category_hint_tags(row: pd.Series):
     text = " ".join([
         str(row.get("Төрөл", "")),
         str(row.get("Ерөнхий ангилал", "")),
@@ -119,8 +108,7 @@ def _category_hint_tags(row: pd.Series) -> tuple[str, bool, bool]:
         tags.append("tag_consumable beverage coffee instant")
     return (" ".join(tags), is_consumable, is_appliance)
 
-
-def _product_hint_tags(name: str) -> tuple[str, bool, bool]:
+def _product_hint_tags(name: str):
     is_consumable = bool(CONSUMABLE_PAT.search(name))
     is_appliance  = bool(APPLIANCE_PAT.search(name))
     tags = []
@@ -130,24 +118,15 @@ def _product_hint_tags(name: str) -> tuple[str, bool, bool]:
         tags.append("tag_appliance electronics kitchen_appliance")
     return (" ".join(tags), is_consumable, is_appliance)
 
-
-def _fallback_guess(name: str) -> Optional[tuple[str, str, str]]:
-    if KW["coffee"].search(name):
-        return ("Найруулдаг кофе", "Кофе", "боловсруулсан хүнс")
-    if KW["tea"].search(name):
-        return ("Цай", "Цай", "боловсруулсан хүнс")
-    if KW["beer"].search(name):
-        return ("Пиво", "Согтууруулах ундаа", "Шингэн хүнс")
-    if KW["water"].search(name):
-        return ("Ус", "Ундаа", "Шингэн хүнс")
-    if KW["juice"].search(name):
-        return ("Жүүс", "Ундаа", "Шингэн хүнс")
-    if KW["choco"].search(name):
-        return ("Шоколад", "Чихэр", "Амттан")
-    if KW["candy"].search(name):
-        return ("Шийтэн/Лоллипоп", "Чихэр", "Амттан")
+def _fallback_guess(name: str):
+    if KW["coffee"].search(name): return ("Найруулдаг кофе", "Кофе", "боловсруулсан хүнс")
+    if KW["tea"].search(name):    return ("Цай", "Цай", "боловсруулсан хүнс")
+    if KW["beer"].search(name):   return ("Пиво", "Согтууруулах ундаа", "Шингэн хүнс")
+    if KW["water"].search(name):  return ("Ус", "Ундаа", "Шингэн хүнс")
+    if KW["juice"].search(name):  return ("Жүүс", "Ундаа", "Шингэн хүнс")
+    if KW["choco"].search(name):  return ("Шоколад", "Чихэр", "Амттан")
+    if KW["candy"].search(name):  return ("Шийтэн/Лоллипоп", "Чихэр", "Амттан")
     return None
-
 
 def _save_xlsx_ultra_fast(df: pd.DataFrame, path: Path) -> None:
     with Timer("Saving Excel"):
@@ -180,14 +159,124 @@ def _save_xlsx_ultra_fast(df: pd.DataFrame, path: Path) -> None:
                     with pd.ExcelWriter(path, engine="openpyxl", mode="a", if_sheet_exists="overlay") as w:
                         part.to_excel(w, index=False, startrow=i+1, header=False)
 
-
-# ====== Main ======
-def run_classification(
+# ======================================================================
+# ENGINE 1: "SCRIPT" — таны standalone скриптийн яг логикийг bytes орчноор
+# ======================================================================
+def _run_classification_scriptlike(
     sales_bytes: bytes,
     category_bytes: bytes,
     manual_bytes: Optional[bytes] = None,
     probability_threshold: float = 0.15,
-    batch_size: int = 2000,     # reserved; not used in this variant
+    max_features: int = 10000,
+) -> Tuple[str, pd.DataFrame]:
+    total_start = time.time()
+
+    # 1) Sales
+    sales_df = _read_excel_fast(sales_bytes, "sales.xlsx")
+    if "Барааны нэр" not in sales_df.columns:
+        raise ClassificationError("sales.xlsx дотор 'Барааны нэр' багана байх ёстой!")
+    sales_df["Барааны нэр"] = _normalize_text_fast(sales_df["Барааны нэр"])
+    unique_products = sales_df["Барааны нэр"].dropna().unique()
+
+    # 2) Categories: бүх sheet-үүд
+    with Timer("Reading category Excel"):
+        try:
+            excel_file = pd.ExcelFile(io.BytesIO(category_bytes), engine="openpyxl")
+        except Exception as e:
+            raise ClassificationError(f"Ангиллын Excel-ийг нээж чадсангүй: {e}")
+
+    cat_rows = []
+    for sheet in excel_file.sheet_names:
+        try:
+            df = excel_file.parse(sheet, dtype=str, na_filter=False)
+            df["Сегмент"] = sheet
+            cat_rows.append(df)
+        except Exception:
+            continue
+    if not cat_rows:
+        raise ClassificationError("Ангиллын Excel-д хүчинтэй sheet олдсонгүй.")
+
+    category_df = pd.concat(cat_rows, ignore_index=True)
+    category_df = category_df.fillna("")
+    # 3) Багануудыг цэвэрлээд шаардлагатайг үлдээнэ
+    keep_cols = ["Ерөнхий ангилал", "Төрөл", "Ангилал", "Тайлбар", "Бренд", "Сегмент"]
+    category_df = _ensure_columns(category_df, keep_cols).fillna("")
+    for col in keep_cols:
+        category_df[col] = _normalize_text_fast(category_df[col])
+
+    # 4) түлхүүр_текст (Төрөл-ийг давхар жинлэнэ)
+    category_df["түлхүүр_текст"] = (
+        category_df["Төрөл"] + " " +
+        category_df["Төрөл"] + " " +
+        category_df["Ерөнхий ангилал"] + " " +
+        category_df["Ангилал"] + " " +
+        category_df["Тайлбар"] + " " +
+        category_df["Бренд"]
+    )
+
+    # 5) TF-IDF + cosine
+    texts = list(unique_products) + list(category_df["түлхүүр_текст"])
+    vectorizer = TfidfVectorizer(max_features=max_features)
+    tfidf_matrix = vectorizer.fit_transform(texts)
+
+    product_vecs = tfidf_matrix[:len(unique_products)]
+    category_vecs = tfidf_matrix[len(unique_products):]
+    similarity_matrix = cosine_similarity(product_vecs, category_vecs)
+
+    # 6) best match
+    best_match_indices = similarity_matrix.argmax(axis=1)
+    best_match_scores = similarity_matrix.max(axis=1)
+
+    classified = pd.DataFrame({
+        "Барааны нэр": unique_products,
+        "Ангилал": category_df.iloc[best_match_indices]["Ангилал"].values,
+        "Төрөл": category_df.iloc[best_match_indices]["Төрөл"].values,
+        "Ерөнхий ангилал": category_df.iloc[best_match_indices]["Ерөнхий ангилал"].values,
+        "Сегмент": category_df.iloc[best_match_indices]["Сегмент"].values,
+        "Магадлал": best_match_scores.astype(np.float32),
+    })
+
+    # 6.1) Manual override (optional)
+    if manual_bytes is not None:
+        manual_df = _read_excel_fast(manual_bytes, "manual_fix.xlsx")
+        if "Барааны нэр" not in manual_df.columns:
+            raise ClassificationError("manual_fix.xlsx дотор 'Барааны нэр' багана байх ёстой!")
+        manual_df["Барааны нэр"] = _normalize_text_fast(manual_df["Барааны нэр"])
+
+        classified = classified.merge(manual_df, on="Барааны нэр", how="left", suffixes=("", "_гар"))
+
+        thr = float(probability_threshold)
+
+        def choose(col: str):
+            g = f"{col}_гар"
+            if g in classified.columns:
+                classified[col] = np.where(
+                    (classified["Магадлал"] < thr) & classified[g].astype(str).str.strip().ne(""),
+                    classified[g],
+                    classified[col]
+                )
+
+        for col in ["Ангилал", "Төрөл", "Ерөнхий ангилал", "Сегмент"]:
+            choose(col)
+
+        classified = classified.drop(columns=[c for c in classified.columns if c.endswith("_гар")], errors="ignore")
+
+    # 7) Sales руу буцааж merge
+    final_result = sales_df.merge(classified, on="Барааны нэр", how="left")
+
+    job_id = uuid.uuid4().hex[:12]
+    print(f"🎉 SCRIPT engine total: {time.time() - total_start:.2f}s  rows={len(final_result)}")
+    return job_id, final_result
+
+# ======================================================================
+# ENGINE 2: "SMART" — танай сайжруулсан (penalty/hints) логик (өмнөх тань)
+# ======================================================================
+def _run_classification_smart(
+    sales_bytes: bytes,
+    category_bytes: bytes,
+    manual_bytes: Optional[bytes] = None,
+    probability_threshold: float = 0.15,
+    batch_size: int = 2000,
     max_features: int = 10000,
 ) -> Tuple[str, pd.DataFrame]:
 
@@ -257,7 +346,6 @@ def run_classification(
             print(f"🧹 Dropped empty/weak category rows: {dropped}")
         category_df = category_df.loc[valid_mask].reset_index(drop=True)
 
-        # Хэрвээ бүгд унавал зогсооно
         if category_df.empty:
             raise ClassificationError("Ангиллын текстүүд хоосон байна (бусад sheet-үүдийг шалгана уу).")
 
@@ -272,7 +360,6 @@ def run_classification(
         category_df["__is_consumable"] = np.array(cat_is_cons, dtype=bool)
         category_df["__is_appliance"]  = np.array(cat_is_appl, dtype=bool)
 
-        # Final category text
         cat_texts = (category_df["түлхүүр_текст"] + " " + category_df["__hint_tags"].fillna("")).values
 
         # Product augmented texts + flags
@@ -295,7 +382,7 @@ def run_classification(
             dtype=np.float32,
             lowercase=False,
             norm="l2",
-            ngram_range=(1, 2),            # 1–2 грам: 'кофе чанагч' гэх мэт нийлмэл хэллэг барина
+            ngram_range=(1, 2),
             token_pattern=r"\b\w+\b",
         )
         combined_texts = np.concatenate([np.array(prod_aug, dtype=object), cat_texts], axis=0)
@@ -308,13 +395,13 @@ def run_classification(
     with Timer("Computing similarities"):
         similarities = cosine_similarity(prod_vecs, cat_vecs)
 
-        # Consumable product ⟷ Appliance category = penalty (40% down)
+        # Consumable product ⟷ Appliance category = penalty
         rows = np.where(prod_is_cons)[0]
         cols = np.where(category_df["__is_appliance"].values)[0]
         if rows.size and cols.size:
             similarities[np.ix_(rows, cols)] *= 0.6
 
-        # (optionally) Appliance product ⟷ Consumable category penalty
+        # Appliance product ⟷ Consumable category = penalty
         rows2 = np.where(prod_is_appl)[0]
         cols2 = np.where(category_df["__is_consumable"].values)[0]
         if rows2.size and cols2.size:
@@ -335,14 +422,13 @@ def run_classification(
         })
         classified = pd.concat([classified, picked], axis=1)
 
-        # 0-ижилттэй (эсвэл маш ойр) → UNCLASSIFIED + optional keyword guess
+        # 0-ижилттэй → UNCLASSIFIED + жижиг keyword fallback
         zero_mask = best_sim <= 1e-8
         if zero_mask.any():
             print(f"⚠️ No-match products: {zero_mask.sum()}")
             classified.loc[zero_mask, ["Ангилал", "Төрөл", "Ерөнхий ангилал", "Сегмент"]] = [
                 "UNCLASSIFIED", "UNCLASSIFIED", "UNCLASSIFIED", ""
             ]
-            # Жижиг дүрмийн fallback (сонголтоор)
             for i in np.where(zero_mask)[0]:
                 name = unique_products[i]
                 guess = _fallback_guess(name)
@@ -378,11 +464,38 @@ def run_classification(
         final_result = sales_df.merge(classified, on="Барааны нэр", how="left")
 
     job_id = uuid.uuid4().hex[:12]
-    print(f"🎉 Total processing time: {time.time() - total_start:.2f}s")
+    print(f"🎉 SMART engine total: {time.time() - total_start:.2f}s")
     print(f"📊 Processed {len(unique_products)} products with {len(category_df)} categories")
 
     return job_id, final_result
 
+# ======================================================================
+# PUBLIC API
+# ======================================================================
+def run_classification(
+    sales_bytes: bytes,
+    category_bytes: bytes,
+    manual_bytes: Optional[bytes] = None,
+    probability_threshold: float = 0.15,
+    batch_size: int = 2000,
+    max_features: int = 10000,
+    engine: str = "smart",  # "smart" | "script"
+) -> Tuple[str, pd.DataFrame]:
+    engine = (engine or "smart").lower()
+    if engine not in ("smart", "script"):
+        raise ClassificationError("engine нь 'smart' эсвэл 'script' байх ёстой.")
+    if engine == "script":
+        return _run_classification_scriptlike(
+            sales_bytes, category_bytes, manual_bytes,
+            probability_threshold=probability_threshold,
+            max_features=max_features
+        )
+    return _run_classification_smart(
+        sales_bytes, category_bytes, manual_bytes,
+        probability_threshold=probability_threshold,
+        batch_size=batch_size,
+        max_features=max_features
+    )
 
 def save_excel_file(df: pd.DataFrame, job_id: str) -> Path:
     out_path = STORAGE_DIR / f"angilsan_{job_id}.xlsx"
