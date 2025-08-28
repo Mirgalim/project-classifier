@@ -20,13 +20,13 @@ class ClassificationError(Exception):
     pass
 
 class Timer:
-    def __init__(self, name):
+    def __init__(self, name: str):
         self.name = name
-        
+
     def __enter__(self):
         self.start = time.time()
         return self
-        
+
     def __exit__(self, *args):
         elapsed = time.time() - self.start
         print(f"⏱️  {self.name}: {elapsed:.2f}s")
@@ -36,7 +36,7 @@ def _read_excel_fast(file_bytes: bytes, label: str) -> pd.DataFrame:
     with Timer(f"Reading {label}"):
         try:
             return pd.read_excel(
-                io.BytesIO(file_bytes), 
+                io.BytesIO(file_bytes),
                 engine="openpyxl",
                 dtype=str,
                 na_filter=False
@@ -54,26 +54,32 @@ def _ensure_columns(df: pd.DataFrame, required: list[str]) -> pd.DataFrame:
     return df[required].copy()
 
 def _create_key_text_fast(df: pd.DataFrame) -> pd.Series:
-    return df[['Төрөл', 'Ерөнхий ангилал', 'Ангилал', 'Тайлбар', 'Бренд']].apply(
-        lambda row: ' '.join(row.astype(str)), axis=1
+    # 'Төрөл'-ийг давтан оруулж жин өгнө (анхны "зөв" скрипттэй ижил)
+    return (
+        df['Төрөл'].astype(str) + " " +
+        df['Төрөл'].astype(str) + " " +
+        df['Ерөнхий ангилал'].astype(str) + " " +
+        df['Ангилал'].astype(str) + " " +
+        df['Тайлбар'].astype(str) + " " +
+        df['Бренд'].astype(str)
     )
 
 def _save_xlsx_ultra_fast(df: pd.DataFrame, path: Path) -> None:
     with Timer("Saving Excel (ultra fast)"):
+        # Сонголтоор Parquet давхар хадгалж болно
         try:
             import pyarrow.parquet as pq
             import pyarrow as pa
-            
             parquet_path = path.with_suffix('.parquet')
             table = pa.Table.from_pandas(df)
             pq.write_table(table, parquet_path)
-            return
         except ImportError:
             pass
-        
+
+        # Заавал .xlsx-ээ бичнэ
         try:
             with pd.ExcelWriter(
-                path, 
+                path,
                 engine='xlsxwriter',
                 options={
                     'strings_to_numbers': False,
@@ -82,18 +88,18 @@ def _save_xlsx_ultra_fast(df: pd.DataFrame, path: Path) -> None:
                 }
             ) as writer:
                 df.to_excel(
-                    writer, 
-                    index=False, 
+                    writer,
+                    index=False,
                     sheet_name='Results',
                     float_format='%.3f'
                 )
-        except:
+            return
+        except Exception:
+            # Том dataframe үед хэсэгчлэн бичих fallback
             chunk_size = 10000
             first_chunk = True
-            
             for i in range(0, len(df), chunk_size):
                 chunk = df.iloc[i:i + chunk_size]
-                
                 if first_chunk:
                     chunk.to_excel(path, index=False, engine='openpyxl')
                     first_chunk = False
@@ -116,7 +122,7 @@ def run_classification(
     sales_df = _read_excel_fast(sales_bytes, "sales.xlsx")
     if 'Барааны нэр' not in sales_df.columns:
         raise ClassificationError("sales.xlsx дотор 'Барааны нэр' багана байх ёстой!")
-    
+
     with Timer("Processing sales data"):
         sales_df['Барааны нэр'] = _normalize_text_fast(sales_df['Барааны нэр'])
         unique_products = sales_df['Барааны нэр'].dropna().unique()
@@ -135,19 +141,19 @@ def run_classification(
             for sheet_name in excel_file.sheet_names:
                 try:
                     all_sheets[sheet_name] = excel_file.parse(
-                        sheet_name, 
+                        sheet_name,
                         dtype=str,
                         na_filter=False
                     )
-                except:
+                except Exception:
                     continue
         except Exception as e:
             raise ClassificationError(f"Ангиллын Excel-ийг нээж чадсангүй: {e}")
 
     with Timer("Processing categories"):
         needed_cols = ['Ерөнхий ангилал', 'Төрөл', 'Ангилал', 'Тайлбар', 'Бренд', 'Сегмент']
-        base_cols = ['Ерөнхий ангилал', 'Төрөл', 'Ангилал', 'Тайлбар', 'Бренд']
-        
+        base_cols   = ['Ерөнхий ангилал', 'Төрөл', 'Ангилал', 'Тайлбар', 'Бренд']
+
         category_dfs = []
         for sheet_name, sheet_df in all_sheets.items():
             if sheet_df.empty:
@@ -158,7 +164,7 @@ def run_classification(
                     sheet_df[col] = _normalize_text_fast(sheet_df[col])
                 sheet_df['Сегмент'] = sheet_name
                 category_dfs.append(sheet_df)
-            except:
+            except Exception:
                 continue
 
         if not category_dfs:
@@ -182,18 +188,23 @@ def run_classification(
             max_df=0.95,
             sublinear_tf=True,
             dtype=np.float32,
-            lowercase=False,
+            lowercase=False,      # бид аль хэдийн lowercase хийсэн
             norm='l2',
             ngram_range=(1, 1),
             token_pattern=r'\b\w+\b'
         )
 
-        cat_vecs = vectorizer.fit_transform(cat_texts)
-        prod_vecs = vectorizer.transform(unique_products)
-        
+        # ✅ ЗӨВ: products + categories нийлүүлж fit хийнэ
+        combined_texts = np.concatenate([unique_products, cat_texts], axis=0)
+        tfidf_all = vectorizer.fit_transform(combined_texts)
+
+        prod_vecs = tfidf_all[:len(unique_products)]
+        cat_vecs  = tfidf_all[len(unique_products):]
+
         print(f"📊 Vector shapes: categories {cat_vecs.shape}, products {prod_vecs.shape}")
 
     with Timer("Computing similarities"):
+        # Жижиг хэмжээтэй үед cosine_similarity, их үед linear_kernel
         if len(unique_products) < 5000 and len(category_df) < 10000:
             similarities = cosine_similarity(prod_vecs, cat_vecs)
             best_idx = similarities.argmax(axis=1).astype(np.int32)
@@ -203,14 +214,14 @@ def run_classification(
             similarities = linear_kernel(prod_vecs, cat_vecs)
             best_idx = similarities.argmax(axis=1).astype(np.int32)
             best_sim = similarities.max(axis=1).astype(np.float32)
-            
+
         del similarities, prod_vecs, cat_vecs
         gc.collect()
 
     with Timer("Building results"):
         picked = category_df.iloc[best_idx][['Ангилал', 'Төрөл', 'Ерөнхий ангилал', 'Сегмент']].reset_index(drop=True)
         classified = pd.DataFrame({
-            'Барааны нэр': unique_products, 
+            'Барааны нэр': unique_products,
             'Магадлал': best_sim
         })
         classified = pd.concat([classified, picked], axis=1)
@@ -225,10 +236,15 @@ def run_classification(
             classified = classified.merge(manual_df, on='Барааны нэр', how='left', suffixes=('', '_гар'))
 
             low_conf = classified['Магадлал'] < float(probability_threshold)
+
+            def non_empty(series: pd.Series) -> pd.Series:
+                # "" болон зөвхөн whitespace-ийг үл тооно
+                return series.astype(str).str.strip().ne('')
+
             for col in ['Ангилал', 'Төрөл', 'Ерөнхий ангилал', 'Сегмент']:
                 mcol = f"{col}_гар"
                 if mcol in classified.columns:
-                    mask = low_conf & classified[mcol].notna()
+                    mask = low_conf & non_empty(classified[mcol])
                     classified.loc[mask, col] = classified.loc[mask, mcol]
 
             classified = classified.drop(columns=[c for c in classified.columns if c.endswith('_гар')], errors='ignore')
@@ -237,7 +253,7 @@ def run_classification(
         final_result = sales_df.merge(classified, on='Барааны нэр', how='left')
 
     job_id = uuid.uuid4().hex[:12]
-    
+
     total_time = time.time() - total_start
     print(f"🎉 Total processing time: {total_time:.2f} seconds")
     print(f"📊 Processed {len(unique_products)} products with {len(category_df)} categories")
