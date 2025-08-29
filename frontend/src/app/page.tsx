@@ -16,7 +16,7 @@ export default function Page() {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
-    if (!sales || !category) { setErr("sales.xlsx ба Nomin_ba3.xlsx заавал!"); return; }
+    if (!sales || !category) { setErr("sales.xlsx ба angilal.xlsx заавал!"); return; }
     setLoading(true);
     try {
       const res = await uploadAndClassify({ sales, category, manual, threshold });
@@ -42,7 +42,7 @@ export default function Page() {
 
       <form onSubmit={onSubmit} className="grid grid-cols-1 lg:grid-cols-4 gap-4 mt-8">
         <UploadCard label="sales.xlsx" required accept=".xlsx" onChange={setSales} />
-        <UploadCard label="Nomin_ba3.xlsx (categories)" required accept=".xlsx" onChange={setCategory} />
+        <UploadCard label="angilal.xlsx (categories)" required accept=".xlsx" onChange={setCategory} />
         <UploadCard label="manual_fix.xlsx (optional)" accept=".xlsx" onChange={setManual} />
 
         <div className="card p-5 min-w-[280px] flex flex-col justify-between">
