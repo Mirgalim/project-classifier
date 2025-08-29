@@ -169,10 +169,8 @@ def run_classification(
 
 def save_excel_file(df: pd.DataFrame, job_id: str) -> Path:
     out_path = STORAGE_DIR / f"angilsan_{job_id}.xlsx"
-    df = df.fillna("") 
-
-    with pd.ExcelWriter(out_path, engine="xlsxwriter") as w:
+    df = df.fillna("")
+    with pd.ExcelWriter(out_path, engine="openpyxl") as w:   # 👈 engine-г сольсон
         df.to_excel(w, index=False, sheet_name="Results")
-
     return out_path
 
